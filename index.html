@@ -86,7 +86,7 @@ document.getElementById('loginForm').addEventListener('submit',function(e){
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.14.5/dist/sweetalert2.all.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-  <script>window.API_URL = 'https://script.google.com/macros/s/AKfycbx-YNwhkVLaX7WzaPzZm2CgPf2h-xeZKiity0oYomRM7xCNel2gLbP7oEoxSBClSxd0/exec';</script>
+  <script src="config.js"></script>
 <script>
 const State = { token: null, user: null, page: null, cur: null };
 const Pages = {};
@@ -108,7 +108,7 @@ function api(fn) {
     if (typeof google !== 'undefined' && google.script && google.script.run) { // dijalankan di dalam Apps Script
       const r = google.script.run.withSuccessHandler(done).withFailureHandler(bad); r[fn].apply(r, args);
     } else { // dijalankan di hosting luar (GitHub Pages): panggil Web App lewat HTTP
-      if (!window.API_URL || window.API_URL.indexOf('PASTE_') === 0) return rej(new Error('API_URL belum diatur di index.html.'));
+      if (!window.API_URL || window.API_URL.indexOf('PASTE_') === 0) return rej(new Error('API_URL belum diatur di config.js.'));
       fetch(window.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ fn: fn, args: args }) })
         .then(r => r.json()).then(done).catch(bad);
     }
@@ -739,24 +739,33 @@ const Face = {
     });
   },
   async loop(v, opt, msg, stopped, resolve, fail) {
-    const o = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+    const oFast = new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.4 });
+    const oDesc = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
     const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     const eye = (p, i) => (d(p[i + 1], p[i + 5]) + d(p[i + 2], p[i + 4])) / (2 * d(p[i], p[i + 3]));
-    let blinked = !opt.liveness, closed = false; const got = [], t0 = Date.now();
+    let blinked = !opt.liveness, dipped = false; const hist = [], got = [], t0 = Date.now();
     while (!stopped()) {
       try {
-        if (Date.now() - t0 > 40000) return fail(new Error('Waktu verifikasi habis. Coba lagi.'));
+        const el = Date.now() - t0;
+        if (el > 40000) return fail(new Error('Waktu verifikasi habis. Coba lagi dengan pencahayaan lebih terang.'));
         if (!blinked) {
-          const det = await faceapi.detectSingleFace(v, o).withFaceLandmarks();
-          if (!det) msg('Wajah tidak terdeteksi. Hadapkan wajah ke kamera.');
-          else { msg('Kedipkan mata Anda sekali...'); const p = det.landmarks.positions, e = (eye(p, 36) + eye(p, 42)) / 2; if (e < 0.2) closed = true; else if (closed && e > 0.24) blinked = true; }
+          const det = await faceapi.detectSingleFace(v, oFast).withFaceLandmarks();
+          if (!det) { msg('Wajah tidak terdeteksi. Hadapkan wajah ke kamera.'); await sleep(100); continue; }
+          const p = det.landmarks.positions, e = (eye(p, 36) + eye(p, 42)) / 2;
+          hist.push(e); if (hist.length > 40) hist.shift();
+          const srt = hist.slice().sort((x, y) => x - y), base = srt[Math.floor(srt.length * 0.85)]; // tingkat mata terbuka
+          if (hist.length < 8) msg('Menyiapkan... lihat lurus ke kamera');
+          else {
+            if (e < base * 0.75) dipped = true; else if (dipped && e > base * 0.88) blinked = true;
+            msg('Kedipkan mata Anda sekali' + (el > 12000 ? ' (lebih jelas, pastikan wajah terang)' : '...') + '  [' + e.toFixed(2) + ' / ' + base.toFixed(2) + ']');
+          }
         } else {
           msg('Tahan posisi... (' + got.length + '/' + opt.count + ')');
-          const r = await faceapi.detectSingleFace(v, o).withFaceLandmarks().withFaceDescriptor();
+          const r = await faceapi.detectSingleFace(v, oDesc).withFaceLandmarks().withFaceDescriptor();
           if (r) { got.push(Array.from(r.descriptor).map(x => Math.round(x * 1e5) / 1e5)); if (got.length >= opt.count) { resolve(got); Swal.close(); return; } await sleep(500); }
         }
       } catch (e) { return fail(new Error('Gagal memproses wajah.')); }
-      await sleep(60);
+      await sleep(20);
     }
   }
 };
